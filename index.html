@@ -10,27 +10,53 @@
   <main class="app">
     <header class="top">
       <div class="brand">
-        <div class="title">Leave One Space</div>
-        <div class="subtitle">每行、每列、每區塊都要剛好留 1 格空白</div>
+        <div class="title">Negative-Space</div>
+        <div class="subtitle">像整理桌面一樣，把棋子「塞」進去，留下系統指定的留白。</div>
       </div>
 
       <div class="controls">
+        <label class="pill">
+          Size
+          <select id="sizeSel" aria-label="Board size">
+            <option value="8" selected>8×8</option>
+            <option value="10">10×10</option>
+          </select>
+        </label>
+
+        <label class="pill">
+          Holes
+          <select id="holesSel" aria-label="Holes (difficulty)">
+            <option value="2">2（較簡單）</option>
+            <option value="3" selected>3（標準）</option>
+            <option value="4">4（較難）</option>
+          </select>
+        </label>
+
         <button id="btnNew" class="btn">New</button>
         <button id="btnUndo" class="btn" disabled>Undo</button>
         <button id="btnReset" class="btn">Reset</button>
       </div>
     </header>
 
-    <section class="boardWrap">
-      <div id="board" class="board" aria-label="Puzzle board"></div>
+    <section class="mid">
+      <div class="tray" aria-label="Piece tray">
+        <div class="trayHeader">
+          <div class="trayTitle">Pieces</div>
+          <div class="trayHint">點選棋子 → 移到棋盤 → 點一下放下。按 <kbd>R</kbd> 旋轉。</div>
+        </div>
+        <div id="pieces" class="pieces"></div>
+      </div>
+
+      <div class="boardWrap">
+        <div id="board" class="board" aria-label="Puzzle board"></div>
+        <div id="status" class="status" aria-live="polite"></div>
+      </div>
     </section>
 
     <footer class="bottom">
-      <div class="hint" id="hint">
-        點擊格子切換留白／填滿。灰色圈起的留白是題目給定，不能改。
+      <div class="hint">
+        目標：用俄羅斯方塊棋子把「非洞」的格子塞滿。洞（留白）不可填、不可重疊、不可出界。
       </div>
-
-      <div class="status" id="status" aria-live="polite"></div>
     </footer>
   </main>
 
