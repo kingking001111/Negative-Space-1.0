@@ -183,4 +183,18 @@ kbd{
 
 .cell.invalid{
   border-color: rgba(255,120,120,.35);
-  box-shadow: inset 0 0 0 1px rgba(2
+  box-shadow: inset 0 0 0 1px rgba(255,120,120,.18);
+}
+
+.status{
+  margin-top: 12px;
+  text-align: right;
+  color: var(--muted);
+  font-size: 12px;
+  white-space: pre-line;
+  line-height: 1.6;
+}
+.status.good{ color: var(--good); }
+.status.bad{ color: var(--bad); }
+
+.bottom{ margin-top: 12px; color: var(--muted); font-size: 12px; line-height: 1.5; }
