@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Leave One Space</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <main class="app">
+    <header class="top">
+      <div class="brand">
+        <div class="title">Leave One Space</div>
+        <div class="subtitle">每行、每列、每區塊都要剛好留 1 格空白</div>
+      </div>
+
+      <div class="controls">
+        <button id="btnNew" class="btn">New</button>
+        <button id="btnUndo" class="btn" disabled>Undo</button>
+        <button id="btnReset" class="btn">Reset</button>
+      </div>
+    </header>
+
+    <section class="boardWrap">
+      <div id="board" class="board" aria-label="Puzzle board"></div>
+    </section>
+
+    <footer class="bottom">
+      <div class="hint" id="hint">
+        點擊格子切換留白／填滿。灰色圈起的留白是題目給定，不能改。
+      </div>
+
+      <div class="status" id="status" aria-live="polite"></div>
+    </footer>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
