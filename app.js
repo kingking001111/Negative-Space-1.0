@@ -1,265 +1,419 @@
 (() => {
-  const N = 4;                 // board size
-  const BLOCK = 2;             // 2x2 blocks
+  // --- Tetromino definitions (base rotations will be generated) ---
+  // Each shape is list of (r,c) cells in a 4x4 local grid, origin at (0,0)
+  const SHAPES = {
+    I: [[0,0],[0,1],[0,2],[0,3]],
+    O: [[0,0],[0,1],[1,0],[1,1]],
+    T: [[0,1],[1,0],[1,1],[1,2]],
+    S: [[0,1],[0,2],[1,0],[1,1]],
+    Z: [[0,0],[0,1],[1,1],[1,2]],
+    J: [[0,0],[1,0],[1,1],[1,2]],
+    L: [[0,2],[1,0],[1,1],[1,2]],
+  };
+
   const boardEl = document.getElementById("board");
+  const piecesEl = document.getElementById("pieces");
   const statusEl = document.getElementById("status");
+
+  const btnNew = document.getElementById("btnNew");
   const btnUndo = document.getElementById("btnUndo");
   const btnReset = document.getElementById("btnReset");
-  const btnNew = document.getElementById("btnNew");
 
-  // state
-  // cell.empty = boolean
-  // cell.given = boolean
-  let cells = [];              // length N*N
-  let history = [];
+  const sizeSel = document.getElementById("sizeSel");
+  const holesSel = document.getElementById("holesSel");
+
+  // --- State ---
+  let N = 8;                 // board size
+  let holePieces = 3;        // number of removed tetrominoes => holes difficulty
+  let grid = [];             // 0 empty, 1 filled, -1 hole
+  let inventory = {};        // {I:count, ...}
+  let selectedType = null;
+  let selectedRot = 0;
+  let placements = [];       // stack of placed pieces for undo
   let initialSnapshot = null;
 
-  // ----- helpers -----
-  const idx = (r, c) => r * N + c;
-  const rcFromIdx = (i) => [Math.floor(i / N), i % N];
-
-  function cloneState(state) {
-    return state.map(x => ({ ...x }));
+  // Precompute unique rotations for each type
+  const ROTATIONS = {};
+  for (const [k, cells] of Object.entries(SHAPES)) {
+    ROTATIONS[k] = uniqueRotations(cells);
   }
 
-  function pushHistory() {
-    history.push(cloneState(cells));
-    btnUndo.disabled = history.length === 0;
-  }
+  // --- Utilities ---
+  function idx(r,c){ return r*N+c; }
+  function inb(r,c){ return r>=0 && r<N && c>=0 && c<N; }
 
-  function setStatus(lines, tone = "muted") {
-    statusEl.className = "status " + (tone || "");
+  function cloneGrid(g){ return g.slice(); }
+  function cloneInv(inv){ return Object.fromEntries(Object.entries(inv).map(([k,v])=>[k,v])); }
+
+  function setStatus(lines, tone="") {
+    statusEl.className = "status " + tone;
     statusEl.textContent = lines.join("\n");
   }
 
-  // ----- puzzle generation -----
-  // We generate a valid solution as a permutation p[r] = empty column in row r
-  // and enforce block constraint: each 2x2 block has exactly one empty.
-  function generateSolutionPermutation() {
-    // brute force all permutations of [0..3] and filter by block rule
-    const perms = permute([0,1,2,3]);
-    const valid = perms.filter(p => blocksOk(p));
-    return valid[Math.floor(Math.random() * valid.length)];
+  // Normalize list of cells: shift to top-left
+  function normalize(cells){
+    let minR = Infinity, minC = Infinity;
+    for (const [r,c] of cells){ minR = Math.min(minR,r); minC = Math.min(minC,c); }
+    const shifted = cells.map(([r,c]) => [r-minR, c-minC]);
+    shifted.sort((a,b)=> (a[0]-b[0]) || (a[1]-b[1]));
+    return shifted;
   }
 
-  function blocksOk(p) {
-    // count empties per block
-    const counts = new Map();
-    for (let r = 0; r < N; r++) {
-      const c = p[r];
-      const br = Math.floor(r / BLOCK);
-      const bc = Math.floor(c / BLOCK);
-      const key = `${br},${bc}`;
-      counts.set(key, (counts.get(key) || 0) + 1);
+  function rotate90(cells){
+    // (r,c) -> (c, -r)
+    const rotated = cells.map(([r,c]) => [c, -r]);
+    return normalize(rotated);
+  }
+
+  function uniqueRotations(base){
+    const rots = [];
+    let cur = normalize(base);
+    for (let i=0;i<4;i++){
+      const key = JSON.stringify(cur);
+      if (!rots.some(r => JSON.stringify(r)===key)) rots.push(cur);
+      cur = rotate90(cur);
     }
-    // must be exactly 1 per block; total blocks = (N/BLOCK)^2 = 4
-    for (let br = 0; br < N / BLOCK; br++) {
-      for (let bc = 0; bc < N / BLOCK; bc++) {
-        const key = `${br},${bc}`;
-        if ((counts.get(key) || 0) !== 1) return false;
+    return rots;
+  }
+
+  function firstEmptyCell(g){
+    for (let r=0;r<N;r++){
+      for (let c=0;c<N;c++){
+        const v = g[idx(r,c)];
+        if (v === 0) return [r,c];
       }
+    }
+    return null;
+  }
+
+  function canPlace(g, type, rotIdx, r0, c0){
+    const cells = ROTATIONS[type][rotIdx];
+    for (const [dr,dc] of cells){
+      const r = r0 + dr, c = c0 + dc;
+      if (!inb(r,c)) return false;
+      const v = g[idx(r,c)];
+      if (v !== 0) return false; // can't overlap filled or holes
     }
     return true;
   }
 
-  function permute(arr) {
-    const out = [];
-    const a = arr.slice();
-    function backtrack(i) {
-      if (i === a.length) { out.push(a.slice()); return; }
-      for (let j = i; j < a.length; j++) {
-        [a[i], a[j]] = [a[j], a[i]];
-        backtrack(i + 1);
-        [a[i], a[j]] = [a[j], a[i]];
+  function placeOnGrid(g, type, rotIdx, r0, c0, fillValue=1){
+    const cells = ROTATIONS[type][rotIdx];
+    for (const [dr,dc] of cells){
+      g[idx(r0+dr, c0+dc)] = fillValue;
+    }
+  }
+
+  // --- Generator: tile full board with tetrominoes, then remove k pieces as holes ---
+  // Backtracking tiler (reasonably fast for 8x8; 10x10 might take longer but still ok for MVP)
+  function generatePuzzle(){
+    grid = Array(N*N).fill(0);
+    const sol = [];
+    const counts = {I:0,O:0,T:0,S:0,Z:0,J:0,L:0};
+
+    // heuristic order: try more "awkward" pieces earlier for better fill
+    const typesOrder = ["T","S","Z","J","L","I","O"];
+
+    function backtrack(){
+      const pos = firstEmptyCell(grid);
+      if (!pos) return true;
+      const [r,c] = pos;
+
+      // Try each piece/rotation anchored at (r,c) by shifting its cells so one cell lands on (r,c)
+      // We'll attempt candidate placements by choosing an anchor cell from the shape.
+      for (const t of typesOrder){
+        for (let rot=0; rot<ROTATIONS[t].length; rot++){
+          const cells = ROTATIONS[t][rot];
+          for (const [ar,ac] of cells){
+            const r0 = r - ar;
+            const c0 = c - ac;
+            if (!canPlace(grid, t, rot, r0, c0)) continue;
+
+            placeOnGrid(grid, t, rot, r0, c0, 1);
+            sol.push({type:t, rot, r0, c0});
+            counts[t]++;
+
+            if (backtrack()) return true;
+
+            // undo
+            placeOnGrid(grid, t, rot, r0, c0, 0);
+            sol.pop();
+            counts[t]--;
+          }
+        }
+      }
+      return false;
+    }
+
+    // Fill board
+    const ok = backtrack();
+    if (!ok) {
+      // fallback: smaller size default if solver struggles (rare)
+      throw new Error("Failed to generate a tiling. Try again.");
+    }
+
+    // Now "remove" some placed pieces as holes (negative spaces)
+    const totalPieces = sol.length;
+    const k = Math.min(holePieces, totalPieces-1);
+
+    // choose k distinct indices
+    const pick = [];
+    const used = new Set();
+    while (pick.length < k){
+      const i = Math.floor(Math.random() * totalPieces);
+      if (used.has(i)) continue;
+      used.add(i);
+      pick.push(i);
+    }
+
+    // rebuild a fresh grid with holes
+    const g2 = Array(N*N).fill(0);
+    const inv = {I:0,O:0,T:0,S:0,Z:0,J:0,L:0};
+
+    for (let i=0;i<sol.length;i++){
+      const p = sol[i];
+      if (used.has(i)){
+        // mark holes
+        placeOnGrid(g2, p.type, p.rot, p.r0, p.c0, -1);
+      } else {
+        // these pieces are available for player to place
+        inv[p.type]++;
       }
     }
-    backtrack(0);
-    return out;
+
+    // Player starts with empty (0) and holes (-1) only
+    grid = g2;
+    inventory = inv;
+    placements = [];
+    selectedType = null;
+    selectedRot = 0;
+
+    initialSnapshot = {
+      grid: cloneGrid(grid),
+      inventory: cloneInv(inventory),
+      placements: [],
+      selectedType: null,
+      selectedRot: 0,
+    };
+
+    updateUI();
+    setStatus(["繼續整理。", "選一個棋子，移到棋盤上，點一下放下。", "按 R 旋轉。"]);
   }
 
-  function buildPuzzle() {
-    const sol = generateSolutionPermutation();
-
-    // Start with all filled, then mark empties according to solution
-    const state = Array.from({ length: N * N }, () => ({
-      empty: false,
-      given: false,
-    }));
-    for (let r = 0; r < N; r++) {
-      state[idx(r, sol[r])].empty = true;
-    }
-
-    // Create givens: reveal 2 empties (locked), and add a few "not empty" locks implicitly by givens only.
-    // To keep MVP simple and calm: only lock empties.
-    const emptyIndices = [];
-    for (let i = 0; i < state.length; i++) if (state[i].empty) emptyIndices.push(i);
-
-    shuffle(emptyIndices);
-    const givensCount = 2; // adjust later
-    for (let k = 0; k < givensCount; k++) {
-      const i = emptyIndices[k];
-      state[i].given = true;
-    }
-
-    // Player state starts from all filled, except givens are empty
-    const start = Array.from({ length: N * N }, (_, i) => ({
-      empty: state[i].given ? true : false,
-      given: state[i].given,
-    }));
-
-    return { start, solution: state };
-  }
-
-  function shuffle(a) {
-    for (let i = a.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
-      [a[i], a[j]] = [a[j], a[i]];
-    }
-    return a;
-  }
-
-  // ----- rendering -----
-  function render() {
+  // --- Rendering ---
+  function updateUI(){
+    // board grid template
+    boardEl.style.gridTemplateColumns = `repeat(${N}, 1fr)`;
     boardEl.innerHTML = "";
 
-    for (let r = 0; r < N; r++) {
-      for (let c = 0; c < N; c++) {
-        const i = idx(r, c);
-        const cell = document.createElement("button");
-        cell.type = "button";
-        cell.className = "cell " + (cells[i].empty ? "empty" : "filled") + (cells[i].given ? " given" : "");
-        cell.setAttribute("aria-label", `cell ${r+1},${c+1}`);
-
-        // subtle block edges
-        if (c === 1) cell.classList.add("blockEdgeR"); // after col 1
-        if (r === 1) cell.classList.add("blockEdgeB"); // after row 1
-
-        cell.addEventListener("click", () => onCellClick(i));
-        if (cells[i].given) cell.disabled = true;
-
+    for (let r=0;r<N;r++){
+      for (let c=0;c<N;c++){
+        const v = grid[idx(r,c)];
+        const cell = document.createElement("div");
+        cell.className = "cell" + (v === -1 ? " hole" : (v === 1 ? " filled" : ""));
+        cell.dataset.r = String(r);
+        cell.dataset.c = String(c);
         boardEl.appendChild(cell);
       }
     }
 
-    updateValidationUI();
-  }
+    // events for hover/place
+    boardEl.onmousemove = onBoardHover;
+    boardEl.onclick = onBoardClick;
 
-  function onCellClick(i) {
-    if (cells[i].given) return;
-    pushHistory();
-    cells[i].empty = !cells[i].empty;
-    render();
-  }
+    renderPieces();
+    btnUndo.disabled = placements.length === 0;
 
-  // ----- validation -----
-  function validate() {
-    // return counts and conflicts
-    const rowEmpty = Array(N).fill(0);
-    const colEmpty = Array(N).fill(0);
-    const blkEmpty = Array(N).fill(0); // 4 blocks indexed 0..3
-
-    const conflicts = new Set();
-
-    for (let r = 0; r < N; r++) {
-      for (let c = 0; c < N; c++) {
-        const i = idx(r, c);
-        if (!cells[i].empty) continue;
-
-        rowEmpty[r]++; colEmpty[c]++;
-        const b = Math.floor(r / BLOCK) * (N / BLOCK) + Math.floor(c / BLOCK);
-        blkEmpty[b]++;
-      }
-    }
-
-    // mark conflicts: if any group has >1 empties, all empties in that group conflict
-    function markGroupConflict(predicate) {
-      for (let i = 0; i < N * N; i++) {
-        if (!cells[i].empty) continue;
-        const [r, c] = rcFromIdx(i);
-        if (predicate(r, c)) conflicts.add(i);
-      }
-    }
-
-    for (let r = 0; r < N; r++) {
-      if (rowEmpty[r] > 1) markGroupConflict((rr) => rr === r);
-    }
-    for (let c = 0; c < N; c++) {
-      if (colEmpty[c] > 1) markGroupConflict((_, cc) => cc === c);
-    }
-    for (let br = 0; br < N / BLOCK; br++) {
-      for (let bc = 0; bc < N / BLOCK; bc++) {
-        const b = br * (N / BLOCK) + bc;
-        if (blkEmpty[b] > 1) {
-          markGroupConflict((r, c) =>
-            Math.floor(r / BLOCK) === br && Math.floor(c / BLOCK) === bc
-          );
-        }
-      }
-    }
-
-    // completion: exactly 1 empty per row/col/block
-    const complete =
-      rowEmpty.every(x => x === 1) &&
-      colEmpty.every(x => x === 1) &&
-      blkEmpty.every(x => x === 1);
-
-    return { rowEmpty, colEmpty, blkEmpty, conflicts, complete };
-  }
-
-  function updateValidationUI() {
-    const v = validate();
-
-    // apply conflicts class
-    const cellEls = boardEl.querySelectorAll(".cell");
-    v.conflicts.forEach(i => cellEls[i]?.classList.add("conflict"));
-
-    const lines = [];
-    lines.push(`Row empty:  ${v.rowEmpty.join("  ")}`);
-    lines.push(`Col empty:   ${v.colEmpty.join("  ")}`);
-    lines.push(`Block empty: ${v.blkEmpty.join("  ")}`);
-
-    if (v.complete) {
-      lines.push("");
-      lines.push("整齊。");
-      setStatus(lines, "good");
-    } else if (v.conflicts.size > 0) {
-      lines.push("");
-      lines.push("有些地方變得不整齊。");
-      setStatus(lines, "bad");
+    // check completion
+    const remaining = grid.filter(v => v === 0).length;
+    const holes = grid.filter(v => v === -1).length;
+    if (remaining === 0){
+      setStatus(["整齊。", `Board ${N}×${N} · Holes ${holes} · Pieces placed ${sumPlaced()}`], "good");
     } else {
-      lines.push("");
-      lines.push("繼續整理。");
-      setStatus(lines, "muted");
+      setStatus([`尚餘 ${remaining} 格待填。`, `洞（留白） ${holes} 格。`, `已放置 ${sumPlaced()} 個棋子。`], "");
     }
   }
 
-  // ----- controls -----
-  function resetToInitial() {
-    history = [];
-    btnUndo.disabled = true;
-    cells = cloneState(initialSnapshot);
-    render();
+  function sumPlaced(){ return placements.length; }
+
+  function renderPieces(){
+    piecesEl.innerHTML = "";
+    const types = ["I","O","T","S","Z","J","L"];
+
+    for (const t of types){
+      const count = inventory[t] ?? 0;
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "pieceBtn" + (selectedType === t ? " selected" : "");
+      btn.disabled = count === 0;
+
+      btn.innerHTML = `
+        <div class="pieceTop">
+          <div class="pieceName">${t}</div>
+          <div class="pieceCount">${count}</div>
+        </div>
+        <div class="mini" aria-hidden="true">
+          <svg viewBox="0 0 80 60" width="100%" height="100%">
+            ${miniSvg(t)}
+          </svg>
+        </div>
+      `;
+
+      btn.onclick = () => {
+        if (count === 0) return;
+        selectedType = t;
+        selectedRot = 0;
+        renderPieces();
+      };
+
+      piecesEl.appendChild(btn);
+    }
   }
 
-  function newPuzzle() {
-    const { start } = buildPuzzle();
-    history = [];
-    btnUndo.disabled = true;
-    cells = cloneState(start);
-    initialSnapshot = cloneState(start);
-    render();
+  function miniSvg(t){
+    // draw rotation 0 in a tiny box
+    const cells = ROTATIONS[t][0];
+    const size = 12;
+    // center-ish
+    const norm = normalize(cells);
+    const maxR = Math.max(...norm.map(x=>x[0]));
+    const maxC = Math.max(...norm.map(x=>x[1]));
+    const offsetX = (80 - (maxC+1)*size)/2;
+    const offsetY = (60 - (maxR+1)*size)/2;
+
+    const rects = norm.map(([r,c]) => {
+      const x = offsetX + c*size;
+      const y = offsetY + r*size;
+      return `<rect x="${x}" y="${y}" width="${size-1}" height="${size-1}" rx="3" fill="rgba(255,255,255,.16)" stroke="rgba(255,255,255,.12)" />`;
+    }).join("");
+    return rects;
   }
 
-  btnUndo.addEventListener("click", () => {
-    if (history.length === 0) return;
-    cells = history.pop();
-    btnUndo.disabled = history.length === 0;
-    render();
+  // --- Hover preview / placement ---
+  function clearPreview(){
+    for (const el of boardEl.querySelectorAll(".cell.preview, .cell.invalid")){
+      el.classList.remove("preview");
+      el.classList.remove("invalid");
+    }
+  }
+
+  function getHoverAnchor(evt){
+    const target = evt.target.closest(".cell");
+    if (!target) return null;
+    const r = Number(target.dataset.r);
+    const c = Number(target.dataset.c);
+    return [r,c];
+  }
+
+  function previewAt(r, c){
+    clearPreview();
+    if (!selectedType) return;
+
+    const cells = ROTATIONS[selectedType][selectedRot];
+    // use first cell as anchor (simple, consistent)
+    const [ar, ac] = cells[0];
+    const r0 = r - ar;
+    const c0 = c - ac;
+
+    const ok = canPlace(grid, selectedType, selectedRot, r0, c0);
+    for (const [dr,dc] of cells){
+      const rr = r0 + dr, cc = c0 + dc;
+      if (!inb(rr,cc)) continue;
+      const el = boardEl.children[idx(rr,cc)];
+      if (!el) continue;
+      el.classList.add(ok ? "preview" : "invalid");
+    }
+  }
+
+  function onBoardHover(evt){
+    const p = getHoverAnchor(evt);
+    if (!p) return;
+    previewAt(p[0], p[1]);
+  }
+
+  function onBoardClick(evt){
+    const p = getHoverAnchor(evt);
+    if (!p || !selectedType) return;
+
+    const cells = ROTATIONS[selectedType][selectedRot];
+    const [ar, ac] = cells[0];
+    const r0 = p[0] - ar;
+    const c0 = p[1] - ac;
+
+    if (!canPlace(grid, selectedType, selectedRot, r0, c0)){
+      setStatus(["有些地方放不下。", "別急，換個位置或旋轉。"], "bad");
+      return;
+    }
+
+    // place
+    placeOnGrid(grid, selectedType, selectedRot, r0, c0, 1);
+    inventory[selectedType]--;
+    placements.push({ type: selectedType, rot: selectedRot, r0, c0 });
+
+    // auto deselect if count 0
+    if (inventory[selectedType] === 0) selectedType = null;
+    clearPreview();
+    updateUI();
+  }
+
+  // --- Controls ---
+  function resetPuzzle(){
+    if (!initialSnapshot) return;
+    grid = cloneGrid(initialSnapshot.grid);
+    inventory = cloneInv(initialSnapshot.inventory);
+    placements = [];
+    selectedType = null;
+    selectedRot = 0;
+    clearPreview();
+    updateUI();
+  }
+
+  function undo(){
+    const last = placements.pop();
+    if (!last) return;
+    // remove by setting back to 0
+    placeOnGrid(grid, last.type, last.rot, last.r0, last.c0, 0);
+    inventory[last.type] = (inventory[last.type] ?? 0) + 1;
+    selectedType = last.type; // convenient: keep flow
+    selectedRot = last.rot;
+    clearPreview();
+    updateUI();
+  }
+
+  function newPuzzle(){
+    N = Number(sizeSel.value);
+    holePieces = Number(holesSel.value);
+
+    try {
+      generatePuzzle();
+    } catch (e) {
+      // fallback: try again once
+      try { generatePuzzle(); }
+      catch {
+        setStatus(["生成題目失敗。", "請再按一次 New。"], "bad");
+      }
+    }
+  }
+
+  // rotate with R
+  window.addEventListener("keydown", (e) => {
+    if (!selectedType) return;
+    if (e.key.toLowerCase() === "r"){
+      const rots = ROTATIONS[selectedType].length;
+      selectedRot = (selectedRot + 1) % rots;
+      // keep preview consistent if mouse is on board
+      // (do nothing else; hover will repaint)
+      renderPieces();
+    }
   });
 
-  btnReset.addEventListener("click", resetToInitial);
   btnNew.addEventListener("click", newPuzzle);
+  btnReset.addEventListener("click", resetPuzzle);
+  btnUndo.addEventListener("click", undo);
 
-  // ----- boot -----
+  sizeSel.addEventListener("change", newPuzzle);
+  holesSel.addEventListener("change", newPuzzle);
+
+  // --- Boot ---
   newPuzzle();
 })();
